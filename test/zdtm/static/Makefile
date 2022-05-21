@@ -180,6 +180,7 @@ TST_NOFILE	:=				\
 		grow_map03			\
 		tun				\
 		tun_ns				\
+		tun_split			\
 		stopped				\
 		stopped01			\
 		stopped02			\
