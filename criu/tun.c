@@ -21,6 +21,7 @@
 #include "xmalloc.h"
 #include "kerndat.h"
 #include "sockets.h"
+#include "fdstore.h"
 
 #include "images/tun.pb-c.h"
 
@@ -102,6 +103,10 @@ struct tun_link {
 	struct list_head l;
 	unsigned ns_id;
 	union {
+		unsigned socket_ns_id;	
+		int      fdstore_id;
+	};
+	union {
 		struct {
 			unsigned flags;
 		} rst;
@@ -145,6 +150,29 @@ static struct tun_link *find_tun_link(char *name, unsigned int ns_id)
 	return NULL;
 }
 
+static unsigned get_tun_netdev_ns_id(int fd, unsigned ns_id)
+{
+	struct ns_id *ns;
+	struct stat st;
+	int ns_fd;
+
+	ns_fd = ioctl(fd, TUNGETDEVNETNS);
+	if (ns_fd < 0) {
+		pr_perror("Unable to get a net device net namespace");
+		return ns_id;
+	}
+	if (fstat(ns_fd, &st)) {
+		pr_perror("Unable to stat a net device network namespace");
+		close(ns_fd);
+		return ns_id;
+	}
+	close(ns_fd);
+
+	ns = lookup_ns_by_kid(st.st_ino, &net_ns_desc);
+	if (ns) return ns->id;
+	return ns_id;
+}
+
 static struct tun_link *__dump_tun_link_fd(int fd, char *name, unsigned ns_id, unsigned flags)
 {
 	struct tun_link *tl;
@@ -154,7 +182,8 @@ static struct tun_link *__dump_tun_link_fd(int fd, char *name, unsigned ns_id, u
 	if (!tl)
 		goto err;
 	strlcpy(tl->name, name, sizeof(tl->name));
-	tl->ns_id = ns_id;
+	tl->socket_ns_id = ns_id;
+	tl->ns_id = get_tun_netdev_ns_id(fd,ns_id);
 	INIT_LIST_HEAD(&tl->l);
 
 	if (ioctl(fd, TUNGETVNETHDRSZ, &tl->dmp.vnethdr) < 0) {
@@ -392,13 +421,24 @@ static int tunfile_open(struct file_desc *d, int *new_fd)
 		goto err;
 	}
 
-	memset(&ifr, 0, sizeof(ifr));
-	strlcpy(ifr.ifr_name, tl->name, sizeof(ifr.ifr_name));
-	ifr.ifr_flags = tl->rst.flags;
+	if (tl->fdstore_id==-1) {
+		memset(&ifr, 0, sizeof(ifr));
+		strlcpy(ifr.ifr_name, tl->name, sizeof(ifr.ifr_name));
+		ifr.ifr_flags = tl->rst.flags;
 
-	if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
-		pr_perror("Can't attach tunfile to device");
-		goto err;
+		if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
+			pr_perror("Can't attach tunfile to device");
+			goto err;
+		}
+	}
+	else {
+		int nfd = fdstore_get(tl->fdstore_id);
+		if (nfd < 0) {
+			pr_perror("Can't take fdstore id");
+			goto err;
+		}
+		close(fd);
+		fd = nfd;
 	}
 
 	if (ti->tfe->has_detached && ti->tfe->detached) {
@@ -477,6 +517,8 @@ int dump_tun_link(NetDeviceEntry *nde, struct cr_imgset *fds, struct nlattr **in
 	if (!tl)
 		return ret;
 
+	nde->peer_nsid = tl->socket_ns_id;
+
 	tle.vnethdr = tl->dmp.vnethdr;
 	tle.sndbuf = tl->dmp.sndbuf;
 
@@ -494,17 +536,29 @@ int dump_tun_link(NetDeviceEntry *nde, struct cr_imgset *fds, struct nlattr **in
 
 int restore_one_tun(struct ns_id *ns, struct net_link *link, int nlsk)
 {
+	struct tun_link *tl;
 	NetDeviceEntry *nde = link->nde;
-	int fd, ret = -1, aux;
+	struct ns_id *ns_peer_sock;
+	int fd, ret = 0, aux;
+	int rst_ns = -1;	
+	bool dif_ns;
 
 	if (!nde->tun) {
 		pr_err("Corrupted TUN link entry %x\n", nde->ifindex);
 		return -1;
 	}
 
-	pr_info("Restoring tun device %s\n", nde->name);
+	ns_peer_sock = lookup_ns_by_id(nde->peer_nsid, &net_ns_desc) ? : ns;
+	dif_ns = ns_peer_sock != ns;	
 
-	fd = open_tun_dev(nde->name, nde->ifindex, nde->tun->flags);
+	pr_info("Restoring tun device %s, nsid=%d peer_nsid=%d\n", nde->name, ns->id, ns_peer_sock->id);
+
+	if ( dif_ns && switch_ns_by_fd(ns_peer_sock->net.ns_fd, &net_ns_desc, &rst_ns) < 0) {
+		pr_perror("Can't switch to peer ns");
+		return -1;		
+	}
+
+	fd = open_tun_dev(nde->name, dif_ns ? 0 : nde->ifindex, nde->tun->flags);
 	if (fd < 0)
 		return -1;
 
@@ -543,13 +597,31 @@ int restore_one_tun(struct ns_id *ns, struct net_link *link, int nlsk)
 		goto out;
 	}
 
-	if (restore_link_parms(link, nlsk)) {
+	if (restore_link_parms_target(link, ns_peer_sock->net.nlsk, dif_ns ? rst_ns : -1)) {
 		pr_err("Error restoring %s link params\n", nde->name);
 		goto out;
 	}
 
-	ret = list_tun_link(nde, ns->id);
+	ret = list_tun_link(nde, ns_peer_sock->id);
+	if (ret != 0) {
+		pr_perror("Can't alloc mem");
+		goto out;
+	}
+	
+	tl = find_tun_link(nde->name, ns_peer_sock->id);
+	BUG_ON(tl == 0);
+	if (!dif_ns) 
+		tl->fdstore_id = -1;
+	else {
+		tl->fdstore_id = fdstore_add(fd);
+		ret = tl->fdstore_id < 0 ? -1 : 0;
+	}
+
 out:
 	close(fd);
+	if (rst_ns >= 0 && restore_ns(rst_ns, &net_ns_desc) < 0) {
+		ret = -1;
+		pr_perror("Can't switch back from peer ns");
+	}	
 	return ret;
 }

@@ -1293,6 +1293,13 @@ static int do_rtm_link_req(int msg_type, struct net_link *link, int nlsk, struct
 	return do_rtnl_req(nlsk, &req, req.h.nlmsg_len, restore_link_cb, NULL, NULL, NULL);
 }
 
+int restore_link_parms_target(struct net_link *link, int nlsk, int target_netns_fd)
+{
+	struct newlink_extras extra = { .link=-1, .target_netns=target_netns_fd};
+	pr_info("Restoring tun netdev %s idx %d in %d nsid\n", link->nde->name, link->nde->ifindex, target_netns_fd);
+	return do_rtm_link_req( target_netns_fd != -1 ? RTM_NEWLINK : RTM_SETLINK, link, nlsk, NULL, NULL, &extra);	
+}
+
 int restore_link_parms(struct net_link *link, int nlsk)
 {
 	return do_rtm_link_req(RTM_SETLINK, link, nlsk, NULL, NULL, NULL);

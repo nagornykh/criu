@@ -39,6 +39,7 @@ extern struct ns_desc net_ns_desc;
 extern int write_netdev_img(NetDeviceEntry *nde, struct cr_imgset *fds, struct nlattr **info);
 extern int read_ns_sys_file(char *path, char *buf, int len);
 struct net_link;
+extern int restore_link_parms_target(struct net_link *link, int nlsk, int target_netns_fd);
 extern int restore_link_parms(struct net_link *link, int nlsk);
 
 extern int veth_pair_add(char *in, char *out);
