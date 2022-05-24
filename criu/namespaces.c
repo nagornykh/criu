@@ -1096,6 +1096,22 @@ int dump_namespaces(struct pstree_item *item, unsigned int ns_flags)
 	int pid, nr = 0;
 	int ret = 0;
 
+	int _waitpid(int pid) {
+		int status;
+		int ret = waitpid(pid, &status, 0);
+		if (ret < 0) {
+			pr_perror("Can't wait ns dumper");
+			return -1;
+		}
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			pr_err("Namespaces dumping finished with error %d\n", status);
+			return -1;
+		}
+
+		return 0;
+	}
+
 	/*
 	 * The setns syscall is cool, we can switch to the other
 	 * namespace and then return back to our initial one, but
@@ -1155,23 +1171,15 @@ int dump_namespaces(struct pstree_item *item, unsigned int ns_flags)
 			exit(ret);
 		}
 
-		nr++;
+		if (!opts.sequential)
+			nr++;
+		else if (_waitpid(pid) != 0)
+			return -1;					
 	}
 
 	while (nr > 0) {
-		int status;
-
-		ret = waitpid(-1, &status, 0);
-		if (ret < 0) {
-			pr_perror("Can't wait ns dumper");
+		if (_waitpid(-1) != 0)
 			return -1;
-		}
-
-		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-			pr_err("Namespaces dumping finished with error %d\n", status);
-			return -1;
-		}
-
 		nr--;
 	}
 

@@ -430,6 +430,7 @@ void init_opts(void)
 	opts.pre_dump_mode = PRE_DUMP_SPLICE;
 	opts.file_validation_method = FILE_VALIDATION_DEFAULT;
 	opts.network_lock_method = NETWORK_LOCK_DEFAULT;
+	opts.sequential = false;
 }
 
 bool deprecated_ok(char *what)
@@ -624,6 +625,7 @@ int parse_options(int argc, char **argv, bool *usage_error, bool *has_exec_cmd, 
 		BOOL_OPT("restore-detached", &opts.restore_detach),
 		BOOL_OPT("restore-sibling", &opts.restore_sibling),
 		BOOL_OPT("daemon", &opts.restore_detach),
+		BOOL_OPT("seq", &opts.sequential),
 		{ "images-dir", required_argument, 0, 'D' },
 		{ "work-dir", required_argument, 0, 'W' },
 		{ "log-file", required_argument, 0, 'o' },
