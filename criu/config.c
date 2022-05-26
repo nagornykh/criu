@@ -430,6 +430,7 @@ void init_opts(void)
 	opts.pre_dump_mode = PRE_DUMP_SPLICE;
 	opts.file_validation_method = FILE_VALIDATION_DEFAULT;
 	opts.network_lock_method = NETWORK_LOCK_DEFAULT;
+	opts.log_trace_level = 0;
 }
 
 bool deprecated_ok(char *what)
@@ -698,6 +699,7 @@ int parse_options(int argc, char **argv, bool *usage_error, bool *has_exec_cmd, 
 		{ "file-validation", required_argument, 0, 1098 },
 		{ "lsm-mount-context", required_argument, 0, 1099 },
 		{ "network-lock", required_argument, 0, 1100 },
+		BOOL_OPT("trace-level", &opts.log_trace_level),
 		BOOL_OPT("mntns-compat-mode", &opts.mntns_compat_mode),
 		{},
 	};

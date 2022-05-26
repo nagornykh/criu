@@ -12,6 +12,8 @@
 #include <sys/utsname.h>
 
 #include <fcntl.h>
+#include <execinfo.h>
+#include <dlfcn.h>
 
 #include "page.h"
 #include "common/compiler.h"
@@ -37,6 +39,8 @@ static void vprint_on_level(unsigned int, const char *, va_list);
 
 static char buffer[LOG_BUF_LEN];
 static char buf_off = 0;
+
+static char log_buffer_level[LOG_BUF_LEN];
 /*
  * The early_log_buffer is used to store log messages before
  * logging is set up to make sure no logs are lost.
@@ -345,10 +349,13 @@ static void early_vprint(const char *format, unsigned int loglevel, va_list para
 	early_log_buf_off += log_size;
 }
 
-static void vprint_on_level(unsigned int loglevel, const char *format, va_list params)
+void vprint_on_level_ext(const char *fn_name, const char *file_name, int line_num, unsigned int loglevel, const char *format,
+			 va_list params)
 {
-	int fd, size, ret, off = 0;
+	int fd, size = 0, ret, off = 0;
 	int _errno = errno;
+	char* buf_pos;
+	bool is_log_level = opts.log_trace_level && fn_name && file_name;
 
 	if (unlikely(loglevel == LOG_MSG)) {
 		fd = STDOUT_FILENO;
@@ -369,9 +376,82 @@ static void vprint_on_level(unsigned int loglevel, const char *format, va_list p
 			print_ts();
 	}
 
-	size = vsnprintf(buffer + buf_off, sizeof buffer - buf_off, format, params);
-	size += buf_off;
+	if (is_log_level) {
+		size_t level_off = 0;
+		const int N = 64;
+		char *bl = log_buffer_level;
+		void *bt[N];
+		size_t bt_count = backtrace(bt, N);
 
+		for (int j = 3; j < bt_count; ++j) {
+			Dl_info info;
+			int len;
+
+			dladdr(bt[j], &info);
+
+			*bl++ = '-';
+			*bl++ = '>';
+
+			++level_off;
+			if (!info.dli_sname) {
+				*bl++ = '?';
+				continue;
+			}
+
+			len = strlen(info.dli_sname);
+			strcpy(bl, info.dli_sname);
+			bl += len;
+
+			if (strcmp(info.dli_sname, "main") == 0)
+				break;
+		}
+		*bl = 0;
+
+		for (int i = 0; i < level_off; ++i)
+			buffer[buf_off + i] = '|';
+		if (level_off > 0) {
+			buffer[buf_off + level_off] = ' ';
+			++level_off;
+		}
+
+		buf_pos = buffer + buf_off + level_off;		
+	} else {
+		const char* sev=0;
+		switch (loglevel) {
+			case LOG_ERROR: sev = "Error"; break;
+			case LOG_WARN:  sev = "Warn"; break;
+		}
+
+		buf_pos = buffer + buf_off;
+		if (sev) {
+			size = snprintf(buf_pos, sizeof buffer - (buf_pos - buffer), "%s (%s:%d): ", sev, file_name, line_num);
+			buf_pos += size>0 ? size : 0;
+		}
+	}
+
+	size = vsnprintf(buf_pos, sizeof buffer - (buf_pos - buffer), format, params);
+	buf_pos += size>0 ? size : 0;
+
+	if (is_log_level) {
+		static const char* last_fn_name = 0; 
+
+		if (last_fn_name != fn_name) {
+			const char *sz = file_name + strlen(file_name) - 1;
+			while (sz > file_name && *sz != '/')
+				sz--;
+			sz++;
+
+			if ( *(buf_pos-1) == '\n')
+				buf_pos--;
+
+			size = snprintf(buf_pos, sizeof buffer - (buf_pos - buffer), "   \t{%s:%d@%s%s}\n", sz, line_num, fn_name, log_buffer_level);
+			buf_pos += size>0 ? size : 0;
+		}
+
+		last_fn_name = fn_name;
+	}
+
+	size = buf_pos - buffer;
 	while (off < size) {
 		ret = write(fd, buffer + off, size - off);
 		if (ret <= 0)
@@ -386,12 +466,26 @@ static void vprint_on_level(unsigned int loglevel, const char *format, va_list p
 	errno = _errno;
 }
 
+void vprint_on_level(unsigned int loglevel, const char *format, va_list params)
+{
+	vprint_on_level_ext(0, 0, 0, loglevel, format, params);
+}
+
 void print_on_level(unsigned int loglevel, const char *format, ...)
 {
 	va_list params;
 
 	va_start(params, format);
-	vprint_on_level(loglevel, format, params);
+	vprint_on_level_ext(0, 0, 0, loglevel, format, params);
+	va_end(params);
+}
+
+void print_on_level_context(const char* fn_name, const char* file_name, int line_num, unsigned int loglevel, const char *format, ...)
+{
+	va_list params;
+
+	va_start(params, format);
+	vprint_on_level_ext(fn_name, file_name, line_num, loglevel, format, params);
 	va_end(params);
 }
 
